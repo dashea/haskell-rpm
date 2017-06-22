@@ -1,0 +1,11 @@
+FROM davidshea/haskell-rpm-env:ci
+
+ENV LANG=en_US.UTF-8
+
+COPY . /root/haskell-rpm
+
+RUN cd /root/haskell-rpm && \
+    cabal configure --enable-tests --enable-coverage --ghc-option=-DTEST && \
+    cabal build && \
+    cabal test --show-details=always &&
+    /root/.cabal/bin/hcp-coveralls --display-report tests
