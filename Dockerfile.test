@@ -1,0 +1,8 @@
+FROM davidshea/haskell-rpm-env:latest
+
+COPY . /root/haskell-rpm
+
+RUN cd /root/haskell-rpm && \
+    cabal configure --enable-tests --enable-coverage --ghc-option=-DTEST && \
+    cabal build && \
+    cabal test --show-details=always

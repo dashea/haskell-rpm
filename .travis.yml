@@ -2,24 +2,39 @@ dist: trusty
 sudo: required
 language: c
 
+services:
+  - docker
+
 before_install:
-  - wget https://haskell.org/platform/download/8.0.2/haskell-platform-8.0.2-unknown-posix--minimal-x86_64.tar.gz
-  - tar -xzvf ./haskell-platform-8.0.2-unknown-posix--minimal-x86_64.tar.gz
-  - sudo ./install-haskell-platform.sh
-  - cabal update && cabal install hlint
+  # Update to the latest docker
+  - curl -fsSl https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+  - sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+  - sudo apt-get update
+  - sudo apt-get -y install docker-ce
+  # Pull the env image from hub.docker.com as a starting point
+  - docker pull davidshea/haskell-rpm-env:latest
+  # Rebuild, in case Dockerfile.env has changed
+  - docker build -t davidshea/haskell-rpm-env:travis --cache-from davidshea/haskell-rpm-env:latest -f Dockerfile.env .
 
 script:
-  - ~/.cabal/bin/hlint .
-  - cabal install --dependencies-only --enable-tests
-  - cabal configure --enable-tests --enable-coverage --ghc-option=-DTEST
-  - cabal build
-  - cabal test --show-details=always
+  # Run the tests in docker
+  - docker build -t davidshea/haskell-rpm-test -f Dockerfile.test .
+  - docker run davidshea/haskell-rpm-test
 
 after_success:
-  - cabal install hpc-coveralls
-  - ~/.cabal/bin/hpc-coveralls --display-report tests
+  # Push the env container to hub.docker.com
+  - if [ "$TRAVIS_BRANCH" == "master" ] ; then
+        docker login -e "$DOCKER_EMAIL" -u "$DOCKER_USER" -p "$DOCKER_PASSWORD"
+        docker push davidshea/haskell-rpm-env
+    fi
 
 notifications:
   email:
     on_failure: change
     on_success: change
+
+env:
+  global:
+    - DOCKER_EMAIL=dshea@redhat.com
+    - DOCKER_USER=davidshea
+    - secure: tLRjE8jCZ1pVOuvz6PxVCYvwTZnz7I5X3NYlyrcJB4/jrP+/58RBUhDYaJEjh+Jmp+44p16hZx3wryHhXws3FMlEa3N8iBM7nIUr9uD3XWl7KTl8E/32ul1qLjPV12yi2ZLR1wdrANURjfa2DiEoREmc4Dp7eAOiWIEL8KSt2ZtfYhMnf/J6ZoFiE5m9h2a6W80Dw2YCFaxE0LymtSB1mmMJGjTwXARz3dBjKFhYYXRD5OkPvnbog8jBPPcVUCaebFAF1uuUqC5Wn8Kjr0pkSHJQRL1qptQnUZkrYU6dPX2S8eirZcyD72bj3ydrDfAVclQrw7JAQUzcQ3s5OiWOt//BtgtbqZtXDR1wHxelI+5bniEPlZ2gtspciCAurfqlqCUQJ7bC1IwN1j0lamIPvcZ5f7TIK/DKxWWwa8GAlECEtDfxIclj/Sb3iHA/wFF3Yo9JKRtRGBS/O35qscydDAc2vmVtpU5Sg2HRrdMhdrgtvQRp9nxH5XpprqU7UUVTmCjiqqNw/iLGSuuHSKgnOqSQHAVvKj5ILdceHTjvVbLgmaru6ce0Qixr+TD10WX5JPNBLZfw3rpI+cHM6BaBqS48AR1jOdvVIo4cBd34BgEYZTKm2WL0eL4ezkGeeXeXhcKEyG3FSGlYQCFOcytjwsDawBJKbQIXItpmiZup/TI=

@@ -1,0 +1,5 @@
+.git
+.cabal-sandbox
+cabal.sandbox.config
+Dockerfile*
+dist/
