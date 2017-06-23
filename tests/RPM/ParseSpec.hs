@@ -30,7 +30,7 @@ spec = describe "RPM.Parse" $ do
       parseLead `shouldFailOn` stream
       -- NOTE: http://alpmestan.com/posts/2014-06-18-testing-attoparsec-parsers-with-hspec.html
       -- Right now, hspec-attoparsec will only consider leftovers when the parser succeeds.
-      -- I’m not really sure whether we should return Fail’s unconsumed input or not.
+      -- I'm not really sure whether we should return Fail's unconsumed input or not.
       --
       -- We can't use `leavesUnconsumed` when the parser fails
       -- so the following assertion is invalid for now!
