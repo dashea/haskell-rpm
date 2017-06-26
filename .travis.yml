@@ -14,7 +14,7 @@ before_install:
   # Pull the env image from hub.docker.com as a starting point
   - docker pull davidshea/haskell-rpm-env:latest
   # Rebuild, in case Dockerfile.env has changed
-  - docker build -t davidshea/haskell-rpm-env:travis --cache-from davidshea/haskell-rpm-env:latest -f Dockerfile.env .
+  - docker build -t davidshea/haskell-rpm-env:ci -t davidshea/haskell-rpm-env:latest --cache-from davidshea/haskell-rpm-env:latest -f Dockerfile.env .
 
 script:
   # Run the tests in docker
@@ -25,7 +25,7 @@ after_success:
   # Push the env container to hub.docker.com
   - if [ "$TRAVIS_BRANCH" == "master" ] ; then
         docker login -e "$DOCKER_EMAIL" -u "$DOCKER_USER" -p "$DOCKER_PASSWORD"
-        docker push davidshea/haskell-rpm-env
+        docker push davidshea/haskell-rpm-env:latest
     fi
 
 notifications:
