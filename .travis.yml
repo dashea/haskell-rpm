@@ -14,10 +14,7 @@ before_install:
   # Pull the env image from hub.docker.com as a starting point
   - docker pull davidshea/haskell-rpm-env:latest
   # Rebuild, in case Dockerfile.env has changed
-  - docker build -t davidshea/haskell-rpm-env:ci \
-                 -t davidshea/haskell-rpm-env:latest \
-                 --cache-from davidshea/haskell-rpm-env:latest \
-                 -f Dockerfile.env .
+  - docker build -t davidshea/haskell-rpm-env:ci -t davidshea/haskell-rpm-env:latest --cache-from davidshea/haskell-rpm-env:latest -f Dockerfile.env .
 
 script:
   # Run the tests in docker
