@@ -29,6 +29,7 @@ source-repository   head
 library
     exposed-modules:    Codec.RPM.Conduit,
                         Codec.RPM.Parse,
+                        Codec.RPM.Serialize,
                         Codec.RPM.Tags,
                         Codec.RPM.Types,
                         Codec.RPM.Version
