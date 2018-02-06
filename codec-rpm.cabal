@@ -34,7 +34,9 @@ library
                         Codec.RPM.Types,
                         Codec.RPM.Version
 
-    other-modules:      Codec.RPM.Internal.Numbers
+    other-modules:      Codec.RPM.Internal.Numbers,
+                        Codec.RPM.Internal.Tags,
+                        Codec.RPM.Internal.Tags.TH
 
     build-depends:      attoparsec >= 0.12.1.4 && < 0.14,
                         attoparsec-binary >= 0.2 && < 0.3,
@@ -49,6 +51,7 @@ library
                         parsec >= 3.1.11 && < 3.2,
                         pretty >= 1.1.2.0,
                         resourcet >= 1.1.9 && < 1.2,
+                        template-haskell >= 2.11.0.0 && < 2.13,
                         text >= 1.2.2.0 && < 1.3
 
     default-language:   Haskell2010
@@ -69,6 +72,7 @@ test-suite tests
                         attoparsec-binary >= 0.2 && < 0.3,
                         parsec >= 3.1.11 && < 3.2,
                         pretty >= 1.1.2.0,
+                        template-haskell >= 2.11.0.0 && < 2.13,
                         text >= 1.2.2.2 && < 1.3
 
     default-language:   Haskell2010
