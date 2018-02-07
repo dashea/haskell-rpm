@@ -10,8 +10,8 @@
 -- Stability: stable 
 -- Portability: portable
 
-module Codec.RPM.Internal.Tags.TH(createMkTagTmpl,
-                                  createSerializeTagTmpl)
+module Codec.RPM.Internal.Tags.TH(createMkTag,
+                                  createSerializeTag)
  where
 
 import qualified Data.ByteString as BS
@@ -77,9 +77,9 @@ tagName t = showConstr $ toConstr t
 
 -- Return the function body for mkTag
 -- All of the symbols looked up are looked up in the scope of the calling module; i.e., Codec.RPM.Tags
-{-# ANN createMkTagTmpl "HLint: ignore Use <$>" #-}
-createMkTagTmpl :: Q Exp
-createMkTagTmpl = do
+{-# ANN createMkTag "HLint: ignore Use <$>" #-}
+createMkTag :: Q Exp
+createMkTag = do
     -- create some names for the function arguments
     let storeName  = mkName "store"
         tName      = mkName "tag"
@@ -153,19 +153,21 @@ createMkTagTmpl = do
         Just functionCompose <- lookupValueName "."
         Just constructorName <- lookupValueName $ tagName t
 
-        -- DependsDict is a special case, everything else just takes the value as-is
-        -- XXX clean this up into one conditional
-        ty <- tagType t
-        constructor <- if ty == DependsDictType then do
-            ddE <- dependsDictMap
-            return $ InfixE (Just $ ConE constructorName) (VarE functionCompose) (Just ddE)
-        else return $ ConE constructorName
+        let constructorE = ConE constructorName
 
-        if ty == TagType then do
-            recur <- unNest t >>= mkConstructor 
-            return $ InfixE (Just constructor) (VarE functionCompose) (Just recur)
-        else
-            return constructor
+        ty <- tagType t
+        case ty of
+            -- DependsDict is a special case that needs to modify the argument coming in
+            DependsDictType -> do
+                ddE <- dependsDictMap
+                return $ InfixE (Just constructorE) (VarE functionCompose) (Just ddE)
+
+            -- For nested tag types, recurse on the inner tag and add that to the outer constructor
+            TagType -> do
+                recur <- unNest t >>= mkConstructor
+                return $ InfixE (Just constructorE) (VarE functionCompose) (Just recur)
+
+            _ -> return constructorE
 
     dependsDictMap :: Q Exp
     dependsDictMap = do
@@ -181,5 +183,102 @@ createMkTagTmpl = do
 
         return $ VarE mapName `AppE` LamE [VarP xName] (TupE [tupleLeft, tupleRight])
 
-createSerializeTagTmpl :: Q [Dec]
-createSerializeTagTmpl = undefined
+createSerializeTag :: Q Exp
+createSerializeTag = do
+    -- create some names for the function arguments
+    let serialName = mkName "serializer"
+        tName      = mkName "tag"
+
+    -- the argument list as a list of patterns
+    let argList = map VarP [serialName, tName]
+
+    -- The body is of the form `case tag of \n <constructor> <argument> -> <emit bytes>`
+    -- The nested types (INTERNAL, DEPRECATED, ...) are not represented in the byte stream, so start
+    -- with some matches that just unwrap those types.
+    -- There might be a way to find these constructors with Data or Typeable but it seems like a lot of trouble
+    nestedMatches <- mapM (mkNested serialName) ["DEPRECATED", "INTERNAL", "OBSOLETE", "UNIMPLEMENTED", "UNUSED"]
+
+    -- convert tagLibrary into the rest of the matches
+    matchList <- mapM (mkMatch serialName) tagLibrary
+
+    -- If tagLibrary is complete, that will cover every possible Tag case. If not, we'll get a warning
+    -- at compile time when the template is run.
+
+    -- wrap the matches in a case expression
+    let caseExp = CaseE (VarE tName) (nestedMatches ++ matchList)
+
+    -- wrap the case in a lambda with the argument list
+    return $ LamE argList caseExp
+ where
+    mkNested :: Name -> String -> Q Match
+    mkNested serialName constructor = do
+        -- get the function name to recurse
+        Just serializeTagName <- lookupValueName "serializeTag"
+
+        -- The pattern is `<constructor> t` where t is the Tag parameter we're going to recurse on
+        let conName = mkName constructor
+            tName   = mkName "t"
+            pat     = ConP conName [VarP tName]
+
+        -- The body is the recursive function application applied to 't'
+        let body = NormalB $ VarE serializeTagName `AppE` VarE serialName `AppE` VarE tName
+        return $ Match pat body []
+
+    mkMatch :: Name -> TagDescr -> Q Match
+    mkMatch serialName (tagNum, tagTy, tagTmpl) = do
+        -- If this is a nested type, unnest it until it isn't
+        typeEnum <- tagType tagTmpl
+        if typeEnum == TagType then do
+            inner <- unNest tagTmpl
+            mkMatch serialName (tagNum, tagTy, inner)
+        else do
+            -- Create the pattern match for this tag constructor
+            Just constructorName <- lookupValueName $ tagName tagTmpl
+            let argName = mkName "t"
+            let pat = ConP constructorName [VarP argName]
+
+            -- Figure out which serializer function to use
+            Just serializerFunction <- lookupValueName =<< case tagTy of
+                0 -> return "serializeNull"
+                1 -> return "serializeChar"
+                -- 2 is int8, unused
+                3 -> return "serializeWord16"
+                4 -> return "serializeWord32"
+                5 -> return "serializeWord64"
+                6 -> return "serializeString"
+                7 -> return "serializeBinary"
+                8 -> return "serializeStringArray"
+                9 -> return "serializeI18NString"
+                _ -> fail "Unknown tag type"
+
+            -- The first three arguments to the serializer function are easy: TagSerializer, tagNum, tagTy
+            let serializerPartial = VarE serializerFunction `AppE`
+                                    VarE serialName `AppE`
+                                    LitE (IntegerL $ fromIntegral tagNum) `AppE`
+                                    LitE (IntegerL $ fromIntegral tagTy)
+
+            -- For the last argument:
+            -- if the tag is a singular type, wrap it in a list
+            -- if the tag is DependsDict, pack the data back into a [Word32]
+            singular <- isSingular tagTmpl
+
+            lastArg <- if | singular                    -> return $ ListE [VarE argName]
+                          | typeEnum == DependsDictType -> dependsDictMap argName
+                          | otherwise                   -> return $ VarE argName
+
+            return $ Match pat (NormalB $ serializerPartial `AppE` lastArg) []
+
+    dependsDictMap :: Name -> Q Exp
+    dependsDictMap argName = do
+        -- the result is `map (\(x, y) -> (x `shiftL` 24) .|. y) t`
+        Just mapName <- lookupValueName "map"
+        Just shiftLName <- lookupValueName "shiftL"
+        Just orName <- lookupValueName ".|."
+
+        let xName   = mkName "x"
+            yName   = mkName "y"
+            shiftLE = InfixE (Just $ VarE xName) (VarE shiftLName) (Just $ LitE $ IntegerL 24)
+            orE     = InfixE (Just shiftLE) (VarE orName) (Just $ VarE yName)
+            lambda  = LamE [TupP [VarP xName, VarP yName]] orE
+
+        return $ VarE mapName `AppE` lambda `AppE` VarE argName

@@ -1,3 +1,4 @@
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 -- |
@@ -12,6 +13,7 @@
 module Codec.RPM.Tags(
     -- * Types
     Tag(..),
+    TagSerializer,
     Null(..),
     -- * Tag finding functions
     findTag,
@@ -24,16 +26,25 @@ module Codec.RPM.Tags(
     findWord32ListTag,
     -- * Tag making functions
     mkTag,
+    -- * Tag serialization functions
+    serializeTag,
+    serializerArray,
+    serializerEmpty,
+    serializerStore,
     -- * Tag inspection functions
     tagValue)
  where
 
-import           Data.Bits((.&.), shiftR)
+import           Data.Bits((.&.), (.|.), shiftL, shiftR)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BSL
+import qualified Data.ByteString.Builder as BB
 import qualified Data.ByteString.Char8 as C
+import           Data.Char(chr)
 import           Data.Data(showConstr, toConstr)
 import           Data.List(find)
 import           Data.Maybe(fromMaybe, listToMaybe)
+import           Data.Monoid((<>))
 import           Data.Word
 
 import Codec.RPM.Internal.Numbers
@@ -61,7 +72,33 @@ mkTag :: BS.ByteString      -- ^ The 'headerStore' containing the value of the p
       -> Maybe Tag
 
 -- Create the actual function via TemplateHaskell from the tagLibrary descriptions
-mkTag = $(createMkTagTmpl)
+mkTag = $(createMkTag)
+
+-- | An opaque type for tracking the status of 'Tag' serialization
+data TagSerializer = TagSerializer {
+    tagArray     :: BB.Builder, -- The tag metadata array
+    tagStore     :: BB.Builder, -- The tag data
+    tagStoreSize :: Word32 }    -- The current length of the tag store
+
+-- | An empty 'TagSerializer'
+serializerEmpty :: TagSerializer
+serializerEmpty = TagSerializer mempty mempty 0
+
+-- | A 'Builder' representing the array of 'Tag' metadata. This is stored after the 'SectionHeader'
+-- data in an RPM header.
+serializerArray :: TagSerializer -> BB.Builder
+serializerArray = tagArray
+
+-- | A 'Builder' representing the 'Tag' data store. This data is stored after the array of metadata
+-- and is referenced by the individual 'Tag' metadata entries.
+serializerStore :: TagSerializer -> BB.Builder
+serializerStore = tagStore
+
+-- | Write a 'Tag' back into a stream of bytes
+serializeTag :: TagSerializer            -- ^ The 'headerStore' to append the new 'Tag' data to
+             -> Tag                      -- ^ The 'Tag' to serialize
+             -> TagSerializer
+serializeTag = $(createSerializeTag)
 
 mkNull :: BS.ByteString -> Word32 -> Word32 -> Word32 -> Maybe Null
 mkNull _ ty _ _ | ty == 0    = Just Null
@@ -124,6 +161,106 @@ mkI18NString store ty offset count | fromIntegral (BS.length store) - offset < c
                                    | otherwise   = Nothing
  where
     start  = BS.drop (fromIntegral offset) store
+
+-- align the next byte in the store to the given size
+serializePad :: TagSerializer -> Word32 -> TagSerializer
+serializePad TagSerializer{..} count =
+    let remainder   = (tagStoreSize + 1) `mod` count
+        padding     = if remainder == 0 then 0 else count - remainder
+        paddedStore = tagStore <> BB.lazyByteString (BSL.take (fromIntegral padding) $ BSL.repeat 0)
+    in TagSerializer tagArray paddedStore (tagStoreSize + padding)
+
+serializeTagMetadata :: Int -> Word32 -> Word32 -> Word32 -> BB.Builder
+serializeTagMetadata tag ty off cnt =
+    let tagB = BB.word32BE $ fromIntegral tag
+        tyB  = BB.word32BE ty
+        offB = BB.word32BE off
+        cntB = BB.word32BE cnt
+    in tagB <> tyB <> offB <> cntB
+
+serializeNull :: TagSerializer -> Int -> Word32 -> Null -> TagSerializer
+serializeNull TagSerializer{..} tag ty _ = TagSerializer (tagArray <> newTag) 
+                                                       tagStore
+                                                       tagStoreSize
+ where
+    newTag = serializeTagMetadata tag ty 0 0
+
+serializeChar :: TagSerializer -> Int -> Word32 -> [Char] -> TagSerializer
+serializeChar TagSerializer{..} tag ty c = TagSerializer (tagArray <> newTag)
+                                                         (tagStore <> newStore)
+                                                         (tagStoreSize + newSize)
+ where
+    newTag   = serializeTagMetadata tag ty (tagStoreSize + 1) newSize
+    newStore = mconcat $ map BB.char8 c
+    newSize  = fromIntegral $ length c
+
+serializeWord16 :: TagSerializer -> Int -> Word32 -> [Word16] -> TagSerializer
+serializeWord16 serializer tag ty w = TagSerializer (paddedArray <> newTag)
+                                                    (paddedStore <> newStore)
+                                                    (paddedStoreSize + newSize)
+ where
+    TagSerializer{tagArray     = paddedArray,
+                  tagStore     = paddedStore,
+                  tagStoreSize = paddedStoreSize} = serializePad serializer 2
+    newTag   = serializeTagMetadata tag ty (paddedStoreSize + 1) newSize
+    newStore = mconcat $ map BB.word16BE w
+    newSize  = fromIntegral $ length w * 2
+
+serializeWord32 :: TagSerializer -> Int -> Word32 -> [Word32] -> TagSerializer
+serializeWord32 serializer tag ty w = TagSerializer (paddedArray <> newTag)
+                                                    (paddedStore <> newStore)
+                                                    (paddedStoreSize + newSize)
+ where
+    TagSerializer{tagArray     = paddedArray,
+                  tagStore     = paddedStore,
+                  tagStoreSize = paddedStoreSize} = serializePad serializer 4
+    newTag   = serializeTagMetadata tag ty (paddedStoreSize + 1) newSize
+    newStore = mconcat $ map BB.word32BE w
+    newSize  = fromIntegral $ length w * 4
+
+serializeWord64 :: TagSerializer -> Int -> Word32 -> [Word64] -> TagSerializer
+serializeWord64 serializer tag ty w = TagSerializer (paddedArray <> newTag)
+                                                    (paddedStore <> newStore)
+                                                    (paddedStoreSize + newSize)
+ where
+    TagSerializer{tagArray     = paddedArray,
+                  tagStore     = paddedStore,
+                  tagStoreSize = paddedStoreSize} = serializePad serializer 8
+    newTag   = serializeTagMetadata tag ty (paddedStoreSize + 1) newSize
+    newStore = mconcat $ map BB.word64BE w
+    newSize  = fromIntegral $ length w * 8
+
+serializeString :: TagSerializer -> Int -> Word32 -> String -> TagSerializer
+serializeString serializer tag ty s = serializeChar serializer tag ty $ s ++ [chr 0]
+
+serializeBinary :: TagSerializer -> Int -> Word32 -> BS.ByteString -> TagSerializer
+serializeBinary TagSerializer{..} tag ty bs = TagSerializer (tagArray <> newTag)
+                                                            (tagStore <> newStore)
+                                                            (tagStoreSize + newSize)
+ where
+    newTag   = serializeTagMetadata tag ty (tagStoreSize + 1) newSize
+    newStore = BB.byteString bs
+    newSize  = fromIntegral $ BS.length bs
+
+serializeStringArray :: TagSerializer -> Int -> Word32 -> [String] -> TagSerializer
+serializeStringArray TagSerializer{..} tag ty ss = TagSerializer (tagArray <> newTag)
+                                                                 (tagStore <> newStore)
+                                                                 (tagStoreSize + newSize)
+ where
+    newTag   = serializeTagMetadata tag ty (tagStoreSize + 1) newSize
+    ss0      = map (++ [chr 0]) ss
+    newStore = mconcat $ map BB.string8 ss0
+    newSize  = fromIntegral $ sum $ map length ss0
+
+serializeI18NString :: TagSerializer -> Int -> Word32 -> BS.ByteString -> TagSerializer
+serializeI18NString TagSerializer{..} tag ty ss = TagSerializer (tagArray <> newTag)
+                                                                (tagStore <> newStore)
+                                                                (tagStoreSize + newSize)
+ where
+    newTag   = serializeTagMetadata tag ty (tagStoreSize + 1) newSize
+    ss0      = if BS.last ss /= 0 then BS.snoc ss 0 else ss
+    newStore = BB.byteString ss0
+    newSize  = fromIntegral $ BS.length ss0
 
 -- I don't know how to split a ByteString up into chunks of a given size, so here's what I'm doing.  Take
 -- a list of offsets of where in the ByteString to read.  Skip to each of those offsets, grab size bytes, and
