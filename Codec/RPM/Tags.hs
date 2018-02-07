@@ -13,7 +13,7 @@
 module Codec.RPM.Tags(
     -- * Types
     Tag(..),
-    TagSerializer,
+    TagSerializer(..),
     Null(..),
     -- * Tag finding functions
     findTag,
@@ -28,9 +28,6 @@ module Codec.RPM.Tags(
     mkTag,
     -- * Tag serialization functions
     serializeTag,
-    serializerArray,
-    serializerEmpty,
-    serializerStore,
     -- * Tag inspection functions
     tagValue)
  where
@@ -74,30 +71,18 @@ mkTag :: BS.ByteString      -- ^ The 'headerStore' containing the value of the p
 -- Create the actual function via TemplateHaskell from the tagLibrary descriptions
 mkTag = $(createMkTag)
 
--- | An opaque type for tracking the status of 'Tag' serialization
+-- | A type for tracking the status of 'Tag' serialization
 data TagSerializer = TagSerializer {
-    tagArray     :: BB.Builder, -- The tag metadata array
-    tagStore     :: BB.Builder, -- The tag data
-    tagStoreSize :: Word32 }    -- The current length of the tag store
-
--- | An empty 'TagSerializer'
-serializerEmpty :: TagSerializer
-serializerEmpty = TagSerializer mempty mempty 0
-
--- | A 'Builder' representing the array of 'Tag' metadata. This is stored after the 'SectionHeader'
--- data in an RPM header.
-serializerArray :: TagSerializer -> BB.Builder
-serializerArray = tagArray
-
--- | A 'Builder' representing the 'Tag' data store. This data is stored after the array of metadata
--- and is referenced by the individual 'Tag' metadata entries.
-serializerStore :: TagSerializer -> BB.Builder
-serializerStore = tagStore
+    tagArray     :: BB.Builder, -- ^ The tag metadata array
+    tagStore     :: BB.Builder, -- ^ The tag data
+    tagStoreSize :: Word32 }    -- ^ The current length of the tag store
 
 -- | Write a 'Tag' back into a stream of bytes
 serializeTag :: TagSerializer            -- ^ The 'headerStore' to append the new 'Tag' data to
              -> Tag                      -- ^ The 'Tag' to serialize
              -> TagSerializer
+
+-- Create the function via TemplateHaskell from the tagLibrary descriptions
 serializeTag = $(createSerializeTag)
 
 mkNull :: BS.ByteString -> Word32 -> Word32 -> Word32 -> Maybe Null
